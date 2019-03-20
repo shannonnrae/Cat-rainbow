@@ -1,0 +1,282 @@
+from __future__ import division
+import numpy as np
+import scipy.constants as sc
+import scipy.sparse
+import scipy.linalg
+import pylab as plt
+from numpy.fft import rfft,irfft
+from matplotlib import animation, rc
+from IPython.display import HTML
+import time
+
+# The Schrodinger equation and the Crank Nicolson Method
+
+def banded(Aa,va,up,down):
+
+    # Copy the inputs and determine the size of the system
+    A = np.copy(Aa)
+    v = np.copy(va)
+    N = len(v)
+
+    # Gaussian elimination
+    for m in range(N):
+
+        # Normalization factor
+        div = A[up,m]
+
+        # Update the vector first
+        v[m] /= div
+        for k in range(1,down+1):
+            if m+k<N:
+                v[m+k] -= A[up+k,m]*v[m]
+
+        # Now normalize the pivot row of A and subtract from lower ones
+        for i in range(up):
+            j = m + up - i
+            if j<N:
+                A[i,j] /= div
+                for k in range(1,down+1):
+                    A[i+k,j] -= A[up+k,m]*A[i,j]
+
+    # Backsubstitution
+    for m in range(N-2,-1,-1):
+        for i in range(up):
+            j = m + up - i
+            if j<N:
+                v[m] -= A[i,j]*v[j]
+
+    return v
+
+#Fast discrete sine transform taken from the dcst.py on-line resource
+
+def dst(y):
+    N = len(y)
+    y2 = np.empty(2*N,float)
+    y2[0] = y2[N] = 0.0
+    y2[1:N] = y[1:]
+    y2[:N:-1] = -y[1:]
+    a = -np.imag(rfft(y2))[:N]
+    a[0] = 0.0
+
+    return a
+
+# 1D inverse DST Type-I
+
+def idst(a):
+    N = len(a)
+    c = np.empty(N+1,np.complex)
+    c[0] = c[N] = 0.0
+    c[1:N] = -1j*a[1:]
+    y = irfft(c)[:N]
+    y[0] = 0.0
+
+    return y
+    
+    # Initializing the Constants
+N = 1000
+L = 1e-8         #Meters
+h = 1e-18        #Time Step
+m = 9.109e-31    #kg
+a = L/N
+Nt = 5000
+T = Nt*h
+x = np.linspace(0,L,N)
+x0 = L/2
+sigma = 1e-10    #Meters
+k = 5e10       # 1/Meters
+
+a1 = 1 + h *(1j*sc.hbar)/(2*m*a**2)
+a2 = -h *((1j*sc.hbar)/(4*m*a**2))
+
+b1 = 1 - h *(1j*sc.hbar)/(2*m*a**2)
+b2 = h *((1j*sc.hbar)/(4*m*a**2))
+
+# Tridiagonalizing the A and B matrix
+A = np.zeros([N+1,N+1],dtype = np.complex)
+B = np.zeros([N+1,N+1],dtype = np.complex)
+
+A[0,0] = a1
+A[0,1] = a2
+
+A1 = np.zeros((1,N+1),dtype = np.complex)
+A1[0,0] = a2
+A1[0,1] = a1
+A1[0,2] = a2
+
+for i in range(1,N):
+    A[i] = np.roll(A1,i-1)
+    
+A = A[:-1,:-1]
+
+B[0,0] = b1
+B[0,1] = b2
+
+B1 = np.zeros((1,N+1),dtype = np.complex)
+B1[0,0] = b2
+B1[0,1] = b1
+B1[0,2] = b2
+
+for i in range(1,N):
+    B[i] = np.roll(B1,i-1)
+    
+B = B[:-1,:-1]
+
+def diagonaltorows(B):
+    B2 = np.zeros((3,N),dtype = np.complex)
+    for b in range(0,N-1):
+        B2[0,b+1] = B[b,b+1] 
+        B2[1,b] = B[b,b] 
+        B2[2,b] =B[b+1,b] 
+        
+    b = N-1
+    B2[1,b] = B[b,b]
+    return B2
+
+Arows = diagonaltorows(A)
+Brows = diagonaltorows(B)
+
+# initalizing Psi without time
+start = time.time()
+
+Psi = np.reshape(np.exp(-((x-x0)**2)/(2*sigma**2))*np.exp(1j*k*x),(1,N))
+
+v = np.zeros(N,dtype = np.complex)
+
+
+# Building Psi for different time values
+new_psi2 = banded(Arows,v,1,1)
+new_v = np.zeros(N,dtype = np.complex)
+# Boundary conditions
+Psi[0,0] = 0
+Psi[0,-1] = 0
+
+for t in range(1,int(T/h)):
+    
+    if t == 1 :
+        Psi = np.reshape(np.exp(-((x-x0)**2)/(2*sigma**2))*np.exp(1j*k*x),(1,N))
+    
+    for i in range(N):
+        if i == 0 :
+            new_v[i] = b1*Psi[t-1,i] + b2*Psi[t-1,i+1]
+        elif i == N-1 :
+            new_v[i] = b1*Psi[t-1,i] + b2*Psi[t-1,i-1]
+        else :
+            new_v[i] = b1*Psi[t-1,i] + b2*(Psi[t-1,i+1] + Psi[t-1,i-1])
+        
+    New_psi = banded(Arows,new_v,1,1)
+    Psi = np.vstack((Psi,New_psi))
+       
+    print(t)
+   
+   fig1 = plt.figure()
+axreal = fig1.add_subplot(111)
+Psilistreal = []
+
+for t in range(int(T/h))[::10]:
+     Psilistreal.append(axreal.plot(np.real(Psi[t,:]).tolist()))
+
+plt.xticks(np.linspace(0,N,6),['0','2e-9','4e-9','6e-9','8e-9','1e-8'],fontsize = 14)
+plt.yticks(fontsize = 14)
+plt.subplots_adjust(left = 0.3,bottom = 0.2)
+plt.xlabel('$Position\ (m)$', fontsize = 14)
+plt.ylabel('$Amplitude$',fontsize = 14)
+plt.title('$Time\ evolution\ of\ the\ Real\ part}$\n$of\ the\ Wave\ Function$', fontsize = 14)
+
+imreal = animation.ArtistAnimation(fig1, Psilistreal)
+HTML(imreal.to_html5_video())
+
+# imreal.save('imreal2.mp4')
+rc('animation', html='html5')
+imreal
+
+# For animation purposes
+
+
+
+fig2 = plt.figure()
+
+aximag = fig2.add_subplot(111)
+
+Psilistimag = []
+
+for t in range(int(T/h))[::10]:
+    Psilistimag.append(aximag.plot(np.imag(Psi[t,:]).tolist(),'b'))
+    
+    
+plt.xticks(np.linspace(0,N,6),['$0$','$2e-9$','$4e-9$','$6e-9$','$8e-9$','$1e-8$'],fontsize = 14 )
+plt.yticks(fontsize = 14)
+plt.subplots_adjust(left = 0.3,bottom = 0.2)
+
+plt.xlabel('$Position\ (m)$', fontsize = 14)
+plt.ylabel('$Amplitude$',fontsize = 14)
+plt.title('$Time\ evolution\ of\ the\ Imaginary\ part}$\n$of\ the\ Wave\ Function$', fontsize = 14)
+
+
+print(np.shape(np.real(Psi[t,:]).tolist()))
+
+imimag = animation.ArtistAnimation(fig2, Psilistimag)
+
+HTML(imimag.to_html5_video())
+
+
+
+rc('animation', html='html5')
+imimag
+
+
+# Adding probabilities, Born rule
+
+fig3 = plt.figure()
+axiprob = fig3.add_subplot(111)
+prob = abs(Psi**2)#Psi* np.conj(Psi))
+#print(Psi[1,490:510])
+#print(np.conj(Psi))
+
+
+print(np.shape(prob))
+
+Psilistprob = []
+for t in range(int(T/h))[::10]:
+    Psilistprob.append(axiprob.plot(np.real(prob[t,:]).tolist(),'c'))
+
+plt.xticks(np.linspace(0,N,6),['0','2e-9','4e-9','6e-9','8e-9','1e-8'],fontsize = 16 )
+plt.yticks(fontsize = 16)
+plt.subplots_adjust(bottom = 0.2)
+
+plt.xlabel('$Position\ (m)$', fontsize = 16)
+plt.ylabel('$Probability$',fontsize = 16)
+plt.title('$Probability\ of\ the\ Wave\ Position$', fontsize = 16)
+
+
+improb = animation.ArtistAnimation(fig3, Psilistprob)
+HTML(improb.to_html5_video())
+
+#print(np.shape(np.real(prob[t,:]).tolist()))
+# improb.save('improb.mp4')
+rc('animation', html='html5')
+improb
+
+fig = plt.figure()
+plt.plot(np.real(Psi[50,:]),label = 'Wave postition t = 50 as')
+plt.plot(np.real(Psi[250,:]),label = 'Wave postition t = 250 as')
+plt.plot(np.real(Psi[400,:]),label = 'Wave postition t = 400 as')
+#plt.plot(np.real(Psi[50,:]), 'c')
+plt.plot(prob[50,:],'k',label= 'Probability t = 50 as')
+plt.plot(prob[250,:],'c',label= 'Probability t = 250 as')
+plt.plot(prob[400,:],'m',label= 'Probability t = 400 as')
+plt.legend(loc= 'upper right',fontsize = 7)
+plt.xlabel('$Position\ (m)$', fontsize = 16)
+plt.ylabel('$Amplitude$',fontsize = 16)
+# plt.title('$Schrodinger\ Equation\ using\ Crank\ Nicolson\ method$',fontsize = 16)
+#plt.savefig('CNSEfinal.png')
+# plt.xlim((300,900))
+# plt.xticks(np.linspace(0,N,4),['4e-9','6e-9','8e-9','1e-8'],fontsize = 16 )
+plt.xticks(np.linspace(0,N,6),['0','2e-9','4e-9','6e-9','8e-9','1e-8'],fontsize = 16 )
+plt.xlim((300,1000))
+# plt.xticks(np.linspace(0,N,4),['4e-9','6e-9','8e-9','1e-8'],fontsize = 16 )
+# plt.xticks(fontsize = 16)
+plt.yticks(fontsize = 16)
+plt.subplots_adjust(bottom = 0.2)
+# plt.savefig('Particleinabox.png')
+plt.show()
+
